@@ -1,0 +1,11 @@
+{
+  "model": "qwen3.6-35b-a3b",
+  "model_id": "qwen/qwen3.6-35b-a3b",
+  "backend": "openrouter",
+  "provider": null,
+  "task": "giraffes",
+  "count": 100,
+  "target_max_tokens": 64000,
+  "target_reasoning_effort": "high",
+  "judge_model": "claude-sonnet-5"
+}
