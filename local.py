@@ -1,8 +1,7 @@
-#!./.venv/bin/python
 #%%
 from utils import *
 
-from value_leakage.sample import BASELINE
+from value_leakage.sample import BASELINE, ABOVE_GOOD, BELOW_GOOD
 
 t.set_grad_enabled(False)
 
@@ -20,17 +19,36 @@ model.eval()
 
 #%%
 
+t.cuda.empty_cache()
 conversation = [
     {"role": "user", "content": BASELINE},
 ]
-inputs = tokenizer.apply_chat_template(conversation, add_generation_prompt=True, return_tensors="pt").to(model.device)
+conv_toks = tokenizer.apply_chat_template(
+    conversation,
+    add_generation_prompt=True,
+    return_tensors="pt",
+    tokenize=True,
+    return_dict=False,
+    enable_thinking=True,
+    reasoning_effort="medium",
+).to(model.device)
 
-out = model.generate(inputs, max_new_tokens=8192, do_sample=True, temperature=1.0)
-completion = tokenizer.decode(out[0, inputs.shape[1]:], skip_special_tokens=True)
-reasoning, _, answer = completion.rpartition("</think>")
+def stream_toks(inputs, new_toks: int = 512):
+    toks = inputs
+    past = None
+    for _ in range(new_toks):
+        out = model(toks, past_key_values=past)
+        past = out.past_key_values
+        probs = t.softmax(out.logits[0, -1], dim=-1)
+        toks = t.multinomial(probs, num_samples=1).unsqueeze(0)
+        if toks.item() == tokenizer.eos_token_id:
+            break
+        yield toks.item()
 
-print(reasoning)
-print(answer)
+print(tokenizer.decode(conv_toks)[0])
+for tok in stream_toks(conv_toks, new_toks=4096):
+    print(tokenizer.decode(tok), end="", flush=True)
+t.cuda.empty_cache()
 
 #%%
 
@@ -39,19 +57,13 @@ def rollout_tokens(data: dict, i: int) -> t.Tensor:
     row = data["rows"][i]
     prefix = tokenizer.apply_chat_template([{"role": "user", "content": data["prompt"]}], add_generation_prompt=True, return_tensors="pt")
     completion = f"<think>\n{row['reasoning']}\n</think>\n\n{row['content']}"
-    completion_ids = tokenizer(completion, return_tensors="pt", add_special_tokens=False).input_ids
+    completion_ids = tokenizer(completion, return_tensors="pt", return_dict=False, tokenize=True)
     return t.cat([prefix, completion_ids], dim=1)
 
 baseline = json.load(open("runs/qwen3.6-35b-a3b_20260829_133101/baseline.json"))
+# baseline = json.load(open("runs/qwen3.6-35b-a3b_20260829_133101/above_good.json"))
 tokens = rollout_tokens(baseline, 0)
 print(f"{cyan}{tokens.shape=}{endc}")
 print(tokenizer.decode(tokens[0]))
-
-#%%
-
-row = baseline["rows"][0]
-print(f"{bold}{yellow}{baseline['model']} | {baseline['condition']} | rollout {row['i']}{endc}")
-print(f"{gray}{row['reasoning']}{endc}")
-print(f"{lime}{row['content']}{endc}")
 
 #%%
