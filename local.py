@@ -33,3 +33,25 @@ print(reasoning)
 print(answer)
 
 #%%
+
+def rollout_tokens(data: dict, i: int) -> t.Tensor:
+    """Full token sequence for row i of a saved condition JSON: templated prompt + think block + answer."""
+    row = data["rows"][i]
+    prefix = tokenizer.apply_chat_template([{"role": "user", "content": data["prompt"]}], add_generation_prompt=True, return_tensors="pt")
+    completion = f"<think>\n{row['reasoning']}\n</think>\n\n{row['content']}"
+    completion_ids = tokenizer(completion, return_tensors="pt", add_special_tokens=False).input_ids
+    return t.cat([prefix, completion_ids], dim=1)
+
+baseline = json.load(open("runs/qwen3.6-35b-a3b_20260829_133101/baseline.json"))
+tokens = rollout_tokens(baseline, 0)
+print(f"{cyan}{tokens.shape=}{endc}")
+print(tokenizer.decode(tokens[0]))
+
+#%%
+
+row = baseline["rows"][0]
+print(f"{bold}{yellow}{baseline['model']} | {baseline['condition']} | rollout {row['i']}{endc}")
+print(f"{gray}{row['reasoning']}{endc}")
+print(f"{lime}{row['content']}{endc}")
+
+#%%
