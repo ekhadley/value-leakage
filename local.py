@@ -1,7 +1,6 @@
 #!./.venv/bin/python
 #%%
-import torch as t
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from utils import *
 
 from value_leakage.sample import BASELINE
 

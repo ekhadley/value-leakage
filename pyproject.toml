@@ -5,14 +5,18 @@ description = "Minimal reproduction of the Value Leakage motivated-reasoning exp
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "accelerate>=1.14.0",
     "anthropic>=0.75.0",
     "fire>=0.7.1",
     "matplotlib>=3.11.1",
     "numpy>=2.4.6",
     "openai>=2.14.0",
     "python-dotenv>=1.2.1",
+    "requests>=2.34.2",
     "tenacity>=9.1.2",
+    "torch>=2.13.0",
     "tqdm>=4.67.0",
+    "transformers>=5.16.1",
 ]
 
 [build-system]
