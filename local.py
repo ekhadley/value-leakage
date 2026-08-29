@@ -62,7 +62,7 @@ def rollout_tokens(data: dict, i: int) -> t.Tensor:
         tokenize = True,
         return_dict = False
     )
-    completion = f"<think>\n{row['reasoning']}\n</think>\n\n{row['content']}"
+    completion = f"{row['reasoning']}\n</think>\n\n{row['content']}"
     print(completion)
     completion_ids = tokenizer.encode(completion, return_tensors="pt")
     print(completion_ids)
