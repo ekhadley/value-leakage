@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from dotenv import load_dotenv
 import IPython
-
+from tabulate import tabulate
 import numpy as np
 
 import torch as t
@@ -128,12 +128,12 @@ def tokenize_rollout(rollout: dict, prompt: str, tokenizer: AutoTokenizer, token
         return tokenizer.decode(full_toks)
     return full_toks
 
-def load_jlens(path: str, device: str = "cpu") -> dict:
+def load_jlens(path: str, device: str = "cpu", dtype=t.bfloat16) -> dict:
     """Download a single lens .pt file from the workspace-lenses repo (cached) and load it."""
     local_path = hf_hub_download(repo_id="camilablank/workspace-lenses", filename=path)
     return t.load(local_path, map_location=device, weights_only=False)
 
-def stream_toks(inputs, tokenizer: AutoTokenizer, new_toks: int = 512):
+def stream_toks(model, inputs, tokenizer: AutoTokenizer, new_toks: int = 512):
     toks = inputs
     past = None
     for _ in range(new_toks):
@@ -144,3 +144,38 @@ def stream_toks(inputs, tokenizer: AutoTokenizer, new_toks: int = 512):
         if toks.item() == tokenizer.eos_token_id:
             break
         yield toks.item()
+
+def to_str_toks(inp: str|Tensor, tokenizer) -> list[str]:
+    return [tokenizer.decode(tok) for tok in (tokenizer.encode(inp)[0] if isinstance(inp, str) else inp.squeeze())]
+
+def top_toks_table(logits: Tensor, tokenizer, k: int = 10, show_negative: bool = False, show_probs: bool = True, title: str | None = None, return_top=False):
+    logits = logits.flatten()
+    probs = logits.softmax(-1)
+    top = logits.topk(k)
+    top_strs = [tokenizer.decode([tok]) for tok in top.indices.tolist()]
+    top_vals = top.values.tolist()
+    headers = ["Tok", "Value"] + (["Prob"] if show_probs else [])
+    cols = [[repr(s) for s in top_strs], top_vals] + ([probs[top.indices].tolist()] if show_probs else [])
+    if show_negative:
+        bot = logits.topk(k, largest=False)
+        bot_strs = [tokenizer.decode([tok]) for tok in bot.indices.tolist()]
+        bot_vals = bot.values.tolist()
+        headers = [f"Top {h}" for h in headers] + [f"Bot {h}" for h in headers]
+        cols += [[repr(s) for s in bot_strs], bot_vals] + ([probs[bot.indices].tolist()] if show_probs else [])
+    data = [(i, *(col[i] for col in cols)) for i in range(k)]
+    table_str = tabulate(data, headers=["Idx"] + headers, tablefmt="rounded_outline")
+    if title is not None:
+        lines = table_str.splitlines()
+        inner = len(lines[0]) - 2
+        print(f"╭{'─' * inner}╮")
+        print(f"│{bold}{title.center(inner)}{endc}│")
+        print(f"├{'─' * inner}┤")
+        print("\n".join(lines[1:]))
+    else:
+        print(table_str)
+
+    if return_top:
+        if show_negative:
+            return (top_strs, top_vals, bot_strs, bot_vals)
+        else:
+            return (top_strs, top_vals)

@@ -9,7 +9,13 @@ exact token sequence produced by tokenize_rollout (templated prompt + think
 block + answer) as one flat, scannable stream, split by turn dividers with a
 clickable turn sidebar. Hover any token for its position index, vocab id, and
 exact string; click to pin it in the header. Press 'b' to toggle token
-boundaries, or type an index in the jump box. Activation overlays come later.
+boundaries, or type an index in the jump box.
+
+Pinning a token also opens the J-lens panel: one row per layer (last layer on
+top), top tokens left to right, background intensity ~ prob, hover a cell for
+the exact prob. Left/right arrows step the pinned token (Esc unpins, arrows go
+back to switching rollouts). Readouts are precomputed by harvest_lens.py; the
+panel tells you the command to run if the rollout has no lens file yet.
 
     python view_tokens.py runs/qwen3.6-35b-a3b_20260829_133101
 """
@@ -19,6 +25,7 @@ import html
 import json
 import os
 
+import torch as t
 from flask import Flask
 from transformers import AutoTokenizer
 
@@ -48,6 +55,11 @@ PAGE = """<!doctype html>
     .pinned { box-shadow: 0 0 0 1px #fe8019; }
     .flash { animation: flash 1.2s; }
     @keyframes flash { from { background: #fabd2f; color: #282828; } }
+    #panel { flex: none; width: 440px; display: none; overflow-y: auto; background: #1d2021; border-left: 1px solid #3c3836; padding: 10px 12px; font-size: 12px; }
+    .lrow { white-space: nowrap; line-height: 1.9; }
+    .lnum { display: inline-block; width: 34px; color: #928374; }
+    .cell { display: inline-block; max-width: 44px; overflow: hidden; text-overflow: ellipsis; white-space: pre; vertical-align: bottom; border-radius: 2px; padding: 0 3px; margin-right: 2px; }
+    .note { color: #928374; white-space: pre-wrap; }
     .divider { margin: 10px 0 4px; font-size: 12px; color: #928374; user-select: none; }
     .system { color: #928374; } .user { color: #83a598; } .assistant { color: #b8bb26; }
     #tip { position: fixed; display: none; background: #1d2021; color: #ebdbb2; border: 1px solid #504945; border-radius: 4px; padding: 4px 8px; font-size: 12px; font-family: monospace; pointer-events: none; z-index: 10; white-space: pre; }
@@ -63,7 +75,7 @@ PAGE = """<!doctype html>
     <input id="jump" placeholder="pos...">
     <span id="pin"></span>
 </div>
-<div id="main"><div id="side"></div><div id="stream"></div></div>
+<div id="main"><div id="side"></div><div id="stream"></div><div id="panel"></div></div>
 <div id="tip"></div>
 <script>
     const conds = __CONDS__;
@@ -73,6 +85,8 @@ PAGE = """<!doctype html>
     const stream = document.getElementById("stream");
     const side = document.getElementById("side");
     const pin = document.getElementById("pin");
+    const panel = document.getElementById("panel");
+    let lensPos = null;
     const visible = s => s.replace(/ /g, "·").replace(/\\n/g, "⏎").replace(/\\t/g, "⇥");
     const info = pos => `pos ${pos}  id ${data.ids[pos]}  '${visible(data.texts[pos])}'`;
 
@@ -86,7 +100,9 @@ PAGE = """<!doctype html>
     });
 
     function render() {
-        stream.textContent = side.textContent = pin.textContent = "";
+        stream.textContent = side.textContent = pin.textContent = panel.textContent = "";
+        panel.style.display = "none";
+        lensPos = null;
         pinnedEl = null;
         spans = [];
         const specialIds = new Set(data.special_ids);
@@ -137,22 +153,75 @@ PAGE = """<!doctype html>
     });
 
     const tip = document.getElementById("tip");
-    stream.addEventListener("mousemove", e => {
-        const span = e.target.closest(".tok");
-        if (!span) { tip.style.display = "none"; return; }
-        tip.textContent = info(+span.dataset.pos);
+    function showTip(e, text) {
+        tip.textContent = text;
         tip.style.display = "block";
         tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px";
         tip.style.top = (e.clientY + 18) + "px";
+    }
+    stream.addEventListener("mousemove", e => {
+        const span = e.target.closest(".tok");
+        if (!span) { tip.style.display = "none"; return; }
+        showTip(e, info(+span.dataset.pos));
     });
     stream.addEventListener("mouseleave", () => tip.style.display = "none");
+    panel.addEventListener("mousemove", e => {
+        const cell = e.target.closest(".cell");
+        if (!cell) { tip.style.display = "none"; return; }
+        showTip(e, cell.dataset.tip);
+    });
+    panel.addEventListener("mouseleave", () => tip.style.display = "none");
+
+    function showLens(pos) {
+        lensPos = pos;
+        panel.style.display = "block";
+        fetch(`/lens/${cond}/${idx}/${pos}`).then(r => r.json()).then(d => {
+            if (lensPos !== pos) return;
+            panel.textContent = "";
+            if (d.missing) {
+                const note = document.createElement("div");
+                note.className = "note";
+                note.textContent = `no lens file for this rollout\nrun: python ${d.missing}`;
+                panel.appendChild(note);
+                return;
+            }
+            d.rows.forEach(row => {
+                const div = document.createElement("div");
+                div.className = "lrow";
+                div.innerHTML = `<span class="lnum">L${row.layer}</span>`;
+                row.toks.slice(0, 8).forEach((tok, r) => {
+                    const cell = document.createElement("span");
+                    cell.className = "cell";
+                    const p = row.probs[r];
+                    cell.style.background = `rgba(250, 189, 47, ${Math.sqrt(p).toFixed(3)})`;
+                    if (p > 0.25) cell.style.color = "#282828";
+                    cell.textContent = visible(tok);
+                    cell.dataset.tip = `L${row.layer} rank ${r}  '${visible(tok)}'  p=${p.toFixed(4)}`;
+                    div.appendChild(cell);
+                });
+                panel.appendChild(div);
+            });
+        });
+    }
+
+    function pinTo(pos) {
+        if (pinnedEl) pinnedEl.classList.remove("pinned");
+        pinnedEl = spans[pos] || null;
+        pin.textContent = pinnedEl ? info(pos) : "";
+        if (pinnedEl) {
+            pinnedEl.classList.add("pinned");
+            pinnedEl.scrollIntoView({ block: "nearest" });
+            showLens(pos);
+        } else {
+            lensPos = null;
+            panel.textContent = "";
+            panel.style.display = "none";
+        }
+    }
 
     stream.addEventListener("click", e => {
         const span = e.target.closest(".tok");
-        if (pinnedEl) pinnedEl.classList.remove("pinned");
-        pinnedEl = span;
-        pin.textContent = span ? info(+span.dataset.pos) : "";
-        if (span) span.classList.add("pinned");
+        pinTo(span ? +span.dataset.pos : -1);
     });
 
     document.getElementById("jump").addEventListener("keydown", e => {
@@ -168,8 +237,13 @@ PAGE = """<!doctype html>
     document.addEventListener("keydown", e => {
         if (e.target.tagName === "INPUT") return;
         if (e.key === "b") stream.classList.toggle("noalt");
-        if (e.key === "ArrowLeft") { idx--; load(); }
-        if (e.key === "ArrowRight") { idx++; load(); }
+        if (e.key === "Escape") pinTo(-1);
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+            e.preventDefault();
+            const d = e.key === "ArrowLeft" ? -1 : 1;
+            if (pinnedEl) pinTo(Math.max(0, Math.min(spans.length - 1, +pinnedEl.dataset.pos + d)));
+            else { idx += d; load(); }
+        }
     });
 
     load();
@@ -206,9 +280,21 @@ def main():
             cache[(condition, i)] = json.dumps(payload)
         return cache[(condition, i)]
 
+    lens_files = {}
+    def lens_readout(condition: str, i: int, pos: int) -> dict:
+        if (condition, i) not in lens_files:
+            path = f"{args.run_dir}/lens/{condition}-{i}.pt"
+            lens_files[(condition, i)] = t.load(path, map_location="cpu") if os.path.exists(path) else None
+        lf = lens_files[(condition, i)]
+        if lf is None:
+            return {"missing": f"harvest_lens.py {args.run_dir} {condition} {i}"}
+        rows = [{"layer": layer, "toks": [tokenizer.decode([tid]) for tid in lf["ids"][li, pos].tolist()], "probs": lf["probs"][li, pos].tolist()} for li, layer in enumerate(lf["layers"])]
+        return {"rows": rows[::-1]}
+
     app = Flask(__name__)
     app.add_url_rule("/", "index", lambda: page)
     app.add_url_rule("/data/<condition>/<int:i>", "data", data)
+    app.add_url_rule("/lens/<condition>/<int:i>/<int:pos>", "lens", lens_readout)
     print(f"serving {sum(conds.values())} rollouts across {list(conds)} at http://localhost:{args.port}")
     app.run(port=args.port)
 
